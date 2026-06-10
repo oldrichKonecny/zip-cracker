@@ -1,6 +1,6 @@
 ## Zip Cracker 🥨
 
-A fast, multi-threaded brute-force ZIP password recovery tool written in Rust.
+Multi-threaded brute-force ZIP password recovery tool written in Rust.
 Point it at an encrypted ZIP and it enumerates candidate passwords over a
 configurable alphabet and length range. It auto-detects and supports both
 **ZipCrypto** (legacy) and **WinZip AES** (AE-1/AE-2, 128/192/256-bit) encryption.
