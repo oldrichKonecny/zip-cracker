@@ -8,6 +8,12 @@ configurable alphabet and length range. It auto-detects and supports both
 > ⚠️ Use this only on archives you are authorized to access — e.g. recovering
 > your own forgotten passwords, authorized penetration testing, or CTFs.
 
+## 🚧 Work in progress
+
+This project is a **work in progress** and is **not** production-ready. It is
+experimental, has had limited testing, and may contain bugs or change without
+notice. Do not rely on it for anything important. Use at your own risk.
+
 ## Build
 
 Requires a [Rust toolchain](https://rustup.rs/).
