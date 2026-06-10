@@ -1,0 +1,14 @@
+[package]
+name = "zip_pass_cracker"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+clap = { version = "4", features = ["derive"] }
+zip = "8"
+pbkdf2 = { version = "0.13", default-features = false }
+sha1 = "0.11"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
