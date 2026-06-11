@@ -8,6 +8,12 @@ clap = { version = "4", features = ["derive"] }
 zip = "8"
 pbkdf2 = { version = "0.13", default-features = false }
 sha1 = "0.11"
+lopdf = "0.36"
+md-5 = "0.10"
+sha2 = { version = "0.10", features = ["asm"] }
+aes = "0.8"
+cbc = "0.1"
+cipher = "0.4"
 
 [profile.release]
 lto = "thin"
