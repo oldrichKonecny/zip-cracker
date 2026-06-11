@@ -18,7 +18,7 @@ file's content:
 
 This project is a **work in progress** and is **not** production-ready. It is
 experimental, has had limited testing, and may contain bugs or change without
-notice. Do not rely on it for anything important. I'm trying to keep up and review all the changes but you know how it is... I'm also learning the capabilities claude code with this project.
+notice. Do not rely on it for anything important. Also this whole project is vibecoded. I'm trying to keep up and review all the changes but you know how it is... I'm using this pet project to learn the capabilities of claude code.
 
 ## Build
 
