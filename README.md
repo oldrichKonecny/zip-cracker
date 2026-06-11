@@ -18,7 +18,7 @@ file's content:
 
 This project is a **work in progress** and is **not** production-ready. It is
 experimental, has had limited testing, and may contain bugs or change without
-notice. Do not rely on it for anything important. Use at your own risk.
+notice. Do not rely on it for anything important. I'm trying to keep up and review all the changes but you know how it is... I'm also learning the capabilities claude code with this project.
 
 ## Build
 
