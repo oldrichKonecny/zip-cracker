@@ -39,6 +39,15 @@ keyspace is exhausted without a match it exits 2.
 - `--min-len <N>` / `--max-len <N>` — length range to search (inclusive).
   Lengths are tried shortest-first. Defaults: 1..=8.
 - `-L, --length <N>` — shorthand setting both min and max to an exact length.
+- `-p, --pattern <P>` — **pattern (mask) mode**: a per-position template that
+  fixes some characters and brute-forces the rest. Conflicts with `--charset`,
+  the preset flags, and the length flags (the pattern determines the length).
+  Notation: literal bytes match themselves; `[a-z0-9]` is a character class
+  (inclusive ranges + individual chars); `X{n}` repeats the previous position
+  `n` times; `\d \l \u \s` are the digit/lower/upper/symbol presets (usable bare
+  or inside `[...]`); `\` escapes a special char (`[ ] { } \` or a preset
+  letter). Variable `{m,n}` quantifiers and negated `[^...]` classes are not
+  supported.
 - `-t, --threads <N>` — worker count (defaults to available parallelism).
 - `--start <I>` / `--end <I>` — resume window as global candidate indices across
   the whole length-ordered keyspace (`--end 0` means "to the end").
@@ -52,31 +61,44 @@ zip_pass_cracker secret.zip --digits -L 10
 zip_pass_cracker secret.zip --lower --digits --max-len 6
 # custom alphabet
 zip_pass_cracker secret.zip -c 'abcABC!?' --min-len 4 --max-len 8
+# pattern: fixed prefix/suffix, brute-force the middle -> e.g. 940995y;117
+zip_pass_cracker secret.zip -p '9409[0-9][5-9][x-z];\d{3}'
 ```
 
 ## Architecture
 
-Two source files:
+Three source files:
 
 - **`src/main.rs`** — CLI (clap), alphabet/keyspace construction, thread
   orchestration, and progress reporting.
+- **`src/pattern.rs`** — parses a `--pattern` string into a per-position alphabet
+  list (the `Mask` positions). No crypto or I/O.
 - **`src/verify.rs`** — ZIP/PDF parsing and the cryptographic password checks.
 
 ### Keyspace model
 
-The search space is enumerated by integer index. For each length `L`, there are
-`base^L` candidates (where `base` = alphabet size). `write_candidate` maps an
-index to a password by interpreting it as a mixed-radix number in the alphabet's
-base, most-significant digit first (index 0 → all `charset[0]`).
+The unit of the search space is a `Mask`: a fixed number of positions, each with
+its own alphabet (`Vec<Vec<u8>>`). A `Mask`'s candidate count is the **product**
+of its per-position alphabet sizes, and `Mask::write` maps an index to a password
+by mixed-radix decoding with a per-position base, most-significant position first
+(index 0 → first char of every position).
 
-Lengths are laid out consecutively into one global keyspace: length `L`'s span
-starts at the cumulative offset of all shorter lengths. `--start`/`--end` operate
-on these global indices, and each length's local sub-range is the intersection of
+The two input modes both reduce to a list of masks:
+
+- **charset + length**: for each length `L`, a uniform mask of `L` positions all
+  sharing the alphabet (so its count is `base^L`).
+- **pattern**: a single mask whose positions come from `pattern::parse`. A literal
+  pattern char is just a size-1 alphabet; a `[...]` class or `\d`-style preset is
+  a larger one.
+
+Masks are laid out consecutively into one global keyspace: each mask's span
+starts at the cumulative offset of all earlier masks. `--start`/`--end` operate
+on these global indices, and each mask's local sub-range is the intersection of
 its span with the requested window. **All indices are `u64`** — a keyspace that
 overflows `u64` (~1.8e19) is rejected at startup, since it is infeasible to
 brute-force anyway.
 
-Each length is searched in turn; its sub-range is split evenly across worker
+Each mask is searched in turn; its sub-range is split evenly across worker
 threads via `thread::scope`.
 
 ### Two-phase verification

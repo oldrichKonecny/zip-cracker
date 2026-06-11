@@ -61,6 +61,7 @@ searched with no match it exits `2`.
 | `--min-len <N>` | Minimum password length to try, inclusive (default: `1`). |
 | `--max-len <N>` | Maximum password length to try, inclusive (default: `8`). |
 | `-L, --length <N>` | Exact length — shorthand that sets both `--min-len` and `--max-len`. |
+| `-p, --pattern <P>` | Pattern (mask) mode: a per-position template that fixes some characters and brute-forces the rest (see [Patterns](#patterns)). Conflicts with `--charset`, the preset flags, and the length flags. |
 | `-t, --threads <N>` | Number of worker threads (default: detected CPU parallelism). |
 | `--start <I>` | Resume from this global candidate index (see [Resuming](#resuming-a-long-run)). |
 | `--end <I>` | Stop at this global candidate index, exclusive. `0` means "to the end". |
@@ -85,7 +86,32 @@ digits (`0-9`). Lengths are tried shortest-first.
 
 # Digits, 8 to 11 characters, capturing the password to a file
 ./target/release/zip_pass_cracker secret.zip --digits --min-len 8 --max-len 11 | tee found.txt
+
+# Pattern: known prefix/suffix, brute-force only the unknown middle
+./target/release/zip_pass_cracker secret.zip -p '9409[0-9][5-9][x-z];\d{3}'   # e.g. 940995y;117
 ```
+
+### Patterns
+
+When you remember part of a password, `--pattern` (`-p`) lets you fix the known
+characters and brute-force only the rest. Each position in the pattern has its
+own alphabet, so the search space is the product of just the unknown positions —
+often vastly smaller than a full length-range sweep. The pattern fixes the exact
+length, so it cannot be combined with `--charset`, the preset flags, or the
+length flags.
+
+| Element | Meaning |
+| --- | --- |
+| literal char | Matches itself (e.g. `9`, `;`). |
+| `[abc]` / `[a-z0-9]` | A character class: inclusive ranges (`a-z`) and individual chars, deduplicated. |
+| `X{n}` | Repeat the previous position `n` times (e.g. `[0-9]{3}` is three digits). |
+| `\d` `\l` `\u` `\s` | Digit / lowercase / uppercase / symbol presets — usable bare or inside `[...]`. |
+| `\X` | A literal `X` — use to put a special char (`[ ] { } \`) into the password, e.g. `\[` matches a literal `[`. |
+
+For example, `9409[0-9][5-9][x-z];\d{3}` matches `9409`, then any digit, then a
+digit `5`-`9`, then a letter `x`-`z`, then a literal `;`, then three digits —
+recovering passwords like `940995y;117` after testing only 150,000 candidates.
+Variable-count `{m,n}` quantifiers and negated `[^...]` classes are not supported.
 
 ## How it works & performance
 

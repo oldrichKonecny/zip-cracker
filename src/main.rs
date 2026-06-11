@@ -1,3 +1,4 @@
+mod pattern;
 mod verify;
 
 use std::path::PathBuf;
@@ -68,6 +69,20 @@ struct Args {
     #[arg(short = 'L', long)]
     length: Option<usize>,
 
+    /// Password pattern (mask) where each position has its own alphabet:
+    /// literals match themselves, `[a-z0-9]` is a character class, `X{n}`
+    /// repeats the previous position, and `\d \l \u \s` are digit/lower/upper/
+    /// symbol presets (`\` escapes a special char). Determines the exact length.
+    /// Example: 9409[0-9][5-9][x-z];\d{3}
+    ///
+    /// Conflicts with --charset, the preset flags, and the length flags.
+    #[arg(
+        short = 'p',
+        long,
+        conflicts_with_all = ["charset", "digits", "lower", "upper", "symbols", "min_len", "max_len", "length"]
+    )]
+    pattern: Option<String>,
+
     /// Resume: global candidate index to start from (across the whole
     /// length-ordered keyspace).
     #[arg(long, default_value_t = 0)]
@@ -78,53 +93,107 @@ struct Args {
     end: u64,
 }
 
-/// One password length to search and where it sits in the global keyspace.
-struct LenSpan {
-    len: usize,
-    /// Global index of this length's first candidate.
+/// One unit of the search space: a fixed number of positions, each with its own
+/// alphabet. A literal pattern character is just a size-1 alphabet. The
+/// charset+length mode builds, for each length L, a mask of L positions all
+/// sharing the alphabet; pattern mode builds a single mask directly.
+struct Mask {
+    positions: Vec<Vec<u8>>,
+}
+
+impl Mask {
+    fn new(positions: Vec<Vec<u8>>) -> Self {
+        Mask { positions }
+    }
+
+    fn len(&self) -> usize {
+        self.positions.len()
+    }
+
+    /// Number of candidates = product of the per-position alphabet sizes. Errors
+    /// if it overflows u64 (~1.8e19), which is infeasible to brute-force anyway.
+    fn space(&self) -> Result<u64, String> {
+        let mut s: u64 = 1;
+        for p in &self.positions {
+            s = s.checked_mul(p.len() as u64).ok_or_else(|| {
+                "keyspace exceeds 2^64 — reduce the length range, alphabet, or pattern".to_string()
+            })?;
+        }
+        Ok(s)
+    }
+
+    /// Map a numeric index to a password by treating it as a mixed-radix number
+    /// with a per-position base (the position's alphabet size), most-significant
+    /// position first. Index 0 -> first char of every position.
+    #[inline(always)]
+    fn write(&self, buf: &mut [u8], mut n: u64) {
+        for i in (0..self.positions.len()).rev() {
+            let alpha = &self.positions[i];
+            let base = alpha.len() as u64;
+            buf[i] = alpha[(n % base) as usize];
+            n /= base;
+        }
+    }
+}
+
+/// One mask and where its candidates sit in the global, length-ordered keyspace.
+struct MaskSpan {
+    mask: Mask,
+    /// Global index of this mask's first candidate.
     offset: u64,
-    /// Number of candidates of this length (alphabet_len^len).
+    /// Number of candidates this mask contributes.
     space: u64,
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
 
-    let charset = build_charset(&args);
-    let base = charset.len() as u64;
-
-    let (min_len, max_len) = match args.length {
-        Some(l) => (l, l),
-        None => (args.min_len, args.max_len),
+    // Build the masks to search and a human-readable description of the keyspace
+    // for the banner. Pattern mode yields a single mask; charset+length mode
+    // yields one uniform mask per length.
+    let (masks, desc): (Vec<Mask>, String) = if let Some(p) = &args.pattern {
+        let positions = pattern::parse(p)?;
+        let len = positions.len();
+        let desc = format!("Pattern: {}\nLength: {}", p, len);
+        (vec![Mask::new(positions)], desc)
+    } else {
+        let charset = build_charset(&args);
+        let (min_len, max_len) = match args.length {
+            Some(l) => (l, l),
+            None => (args.min_len, args.max_len),
+        };
+        if min_len == 0 {
+            return Err("minimum length must be at least 1".into());
+        }
+        if max_len < min_len {
+            return Err(format!("max-len ({}) must be >= min-len ({})", max_len, min_len).into());
+        }
+        let desc = format!(
+            "Alphabet: {} chars [{}]\nLengths: {}..={}",
+            charset.len(),
+            String::from_utf8_lossy(&charset),
+            min_len,
+            max_len,
+        );
+        let masks = (min_len..=max_len)
+            .map(|l| Mask::new(vec![charset.clone(); l]))
+            .collect();
+        (masks, desc)
     };
-    if min_len == 0 {
-        return Err("minimum length must be at least 1".into());
-    }
-    if max_len < min_len {
-        return Err(format!("max-len ({}) must be >= min-len ({})", max_len, min_len).into());
-    }
 
-    // Build the per-length spans and the total keyspace. Everything is u64; a
-    // keyspace that overflows u64 (~1.8e19) is infeasible to brute-force anyway.
-    let mut spans = Vec::new();
+    // Lay the masks out consecutively into one global keyspace. Everything is
+    // u64; a keyspace that overflows u64 is infeasible to brute-force anyway.
+    let mut spans: Vec<MaskSpan> = Vec::new();
     let mut total: u64 = 0;
-    for len in min_len..=max_len {
-        let space = base
-            .checked_pow(len as u32)
-            .and_then(|s| if s == 0 { None } else { Some(s) })
-            .ok_or_else(|| {
-                format!(
-                    "keyspace for length {} exceeds 2^64 (alphabet size {}) — reduce --max-len or the alphabet",
-                    len, base
-                )
-            })?;
+    for mask in masks {
+        let space = mask.space()?;
         total = total
             .checked_add(space)
-            .ok_or("total keyspace exceeds 2^64 — reduce --max-len or the alphabet")?;
-        spans.push(LenSpan {
-            len,
+            .ok_or("total keyspace exceeds 2^64 — reduce the length range, alphabet, or pattern")?;
+        spans.push(MaskSpan {
             offset: total - space,
             space,
+            mask,
         });
     }
 
@@ -162,18 +231,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
     let space = end - start;
     eprintln!(
-        "Target entry: [{}] {}\nEncryption: {}\nThreads: {}\nAlphabet: {} chars [{}]\nLengths: {}..={}\nKeyspace: {}..{} ({} candidates)",
-        info.entry_idx,
-        info.entry_name,
-        kind,
-        threads,
-        base,
-        String::from_utf8_lossy(&charset),
-        min_len,
-        max_len,
-        start,
-        end,
-        space,
+        "Target entry: [{}] {}\nEncryption: {}\nThreads: {}\n{}\nKeyspace: {}..{} ({} candidates)",
+        info.entry_idx, info.entry_name, kind, threads, desc, start, end, space,
     );
 
     let found = AtomicBool::new(false);
@@ -185,7 +244,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         found: &found,
         attempts: &attempts,
         result: &result,
-        charset: &charset,
     };
     let start_t = Instant::now();
 
@@ -198,8 +256,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             if found.load(Ordering::Relaxed) {
                 break;
             }
-            // Intersect this length's global range [offset, offset+space) with
-            // the requested [start, end) window, then map back to local indices.
+            // Intersect this mask's global range [offset, offset+space) with the
+            // requested [start, end) window, then map back to local indices.
             let lo = start.max(span.offset);
             let hi = end.min(span.offset + span.space);
             if lo >= hi {
@@ -214,8 +272,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     let n = threads as u64;
                     let chunk_start = local_start + t * local_space / n;
                     let chunk_end = local_start + (t + 1) * local_space / n;
-                    let len = span.len;
-                    s.spawn(move || worker(ctx, len, chunk_start, chunk_end));
+                    let mask = &span.mask;
+                    s.spawn(move || worker(ctx, mask, chunk_start, chunk_end));
                 }
             });
         }
@@ -282,17 +340,16 @@ struct WorkerCtx<'a> {
     found: &'a AtomicBool,
     attempts: &'a AtomicU64,
     result: &'a OnceLock<String>,
-    charset: &'a [u8],
 }
 
-fn worker(ctx: &WorkerCtx, len: usize, chunk_start: u64, chunk_end: u64) {
+fn worker(ctx: &WorkerCtx, mask: &Mask, chunk_start: u64, chunk_end: u64) {
     // `confirm` runs only on candidates that pass the cheap check, to filter
     // false positives. ZIP needs a real decrypt (ZipCrypto's check is 1 byte);
     // PDF's check compares 16-32 crypto bytes, so a pass is conclusive.
     match &ctx.info.target {
         Target::ZipCrypto { header, check_byte } => run_loop(
             ctx,
-            len,
+            mask,
             chunk_start,
             chunk_end,
             FLUSH_ZIPCRYPTO,
@@ -301,7 +358,7 @@ fn worker(ctx: &WorkerCtx, len: usize, chunk_start: u64, chunk_end: u64) {
         ),
         Target::Aes { salt, pv, key_len } => run_loop(
             ctx,
-            len,
+            mask,
             chunk_start,
             chunk_end,
             FLUSH_AES,
@@ -312,7 +369,7 @@ fn worker(ctx: &WorkerCtx, len: usize, chunk_start: u64, chunk_end: u64) {
             let flush = if t.revision <= 4 { FLUSH_PDF_FAST } else { FLUSH_AES };
             run_loop(
                 ctx,
-                len,
+                mask,
                 chunk_start,
                 chunk_end,
                 flush,
@@ -326,18 +383,18 @@ fn worker(ctx: &WorkerCtx, len: usize, chunk_start: u64, chunk_end: u64) {
 #[inline]
 fn run_loop<F: Fn(&[u8]) -> bool, G: Fn(&[u8]) -> bool>(
     ctx: &WorkerCtx,
-    len: usize,
+    mask: &Mask,
     chunk_start: u64,
     chunk_end: u64,
     flush: u64,
     check: F,
     confirm: G,
 ) {
-    let mut pw = vec![0u8; len];
+    let mut pw = vec![0u8; mask.len()];
     let mut local: u64 = 0;
 
     for n in chunk_start..chunk_end {
-        write_candidate(&mut pw, n, ctx.charset);
+        mask.write(&mut pw, n);
         if check(&pw) && confirm(&pw) {
             let pw_str = String::from_utf8_lossy(&pw).into_owned();
             let _ = ctx.result.set(pw_str);
@@ -389,17 +446,6 @@ fn progress_loop(found: &AtomicBool, done: &AtomicBool, attempts: &AtomicU64, sp
         );
         last_attempts = now;
         last_print = Instant::now();
-    }
-}
-
-/// Map a numeric index to a password by treating it as a mixed-radix number in
-/// the alphabet's base, most-significant digit first. Index 0 -> all charset[0].
-#[inline(always)]
-fn write_candidate(buf: &mut [u8], mut n: u64, charset: &[u8]) {
-    let base = charset.len() as u64;
-    for i in (0..buf.len()).rev() {
-        buf[i] = charset[(n % base) as usize];
-        n /= base;
     }
 }
 
