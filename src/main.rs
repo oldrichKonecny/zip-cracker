@@ -16,15 +16,20 @@ use verify::{ScanInfo, Target};
 // Must be a power of two — the worker uses `local & (flush - 1)` as fast modulo.
 const FLUSH_ZIPCRYPTO: u64 = 1 << 16; // ~7 ms at ~10M pw/s
 const FLUSH_AES: u64 = 1 << 4; //       ~6 ms at ~2.5k pw/s/core
+// PDF R2-R4 (RC4/MD5) is fast; R5/R6 (AES-256 + hardened SHA-2 hash) is slow
+// like ZIP AES, so it reuses FLUSH_AES.
+const FLUSH_PDF_FAST: u64 = 1 << 12;
 const _: () = assert!(FLUSH_ZIPCRYPTO.is_power_of_two());
 const _: () = assert!(FLUSH_AES.is_power_of_two());
+const _: () = assert!(FLUSH_PDF_FAST.is_power_of_two());
 
 #[derive(Parser)]
 #[command(
     name = "zip_pass_cracker",
-    about = "Brute-force a ZIP password over a configurable alphabet and length range"
+    about = "Brute-force a ZIP or PDF password over a configurable alphabet and length range"
 )]
 struct Args {
+    /// Path to the encrypted ZIP or PDF file (auto-detected by content).
     zip_path: PathBuf,
 
     #[arg(short, long)]
@@ -144,14 +149,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .max(1);
 
     let info = verify::scan(&args.zip_path)?;
-    let kind = match &info.target {
-        Target::ZipCrypto { .. } => "ZipCrypto",
+    let kind: String = match &info.target {
+        Target::ZipCrypto { .. } => "ZipCrypto".to_string(),
         Target::Aes { key_len, .. } => match key_len {
             16 => "AES-128",
             24 => "AES-192",
             32 => "AES-256",
             _ => "AES-?",
-        },
+        }
+        .to_string(),
+        Target::Pdf(t) => verify::pdf_kind(t.revision, (t.key_bytes as i64) * 8),
     };
     let space = end - start;
     eprintln!(
@@ -279,35 +286,59 @@ struct WorkerCtx<'a> {
 }
 
 fn worker(ctx: &WorkerCtx, len: usize, chunk_start: u64, chunk_end: u64) {
+    // `confirm` runs only on candidates that pass the cheap check, to filter
+    // false positives. ZIP needs a real decrypt (ZipCrypto's check is 1 byte);
+    // PDF's check compares 16-32 crypto bytes, so a pass is conclusive.
     match &ctx.info.target {
-        Target::ZipCrypto { header, check_byte } => {
-            run_loop(ctx, len, chunk_start, chunk_end, FLUSH_ZIPCRYPTO, |pw| {
-                verify::zipcrypto_check(header, pw, *check_byte)
-            })
-        }
-        Target::Aes { salt, pv, key_len } => {
-            run_loop(ctx, len, chunk_start, chunk_end, FLUSH_AES, |pw| {
-                verify::aes_check(salt, pv, pw, *key_len)
-            })
+        Target::ZipCrypto { header, check_byte } => run_loop(
+            ctx,
+            len,
+            chunk_start,
+            chunk_end,
+            FLUSH_ZIPCRYPTO,
+            |pw| verify::zipcrypto_check(header, pw, *check_byte),
+            |pw| verify::full_verify(&ctx.info.zip_bytes, ctx.info.entry_idx, pw),
+        ),
+        Target::Aes { salt, pv, key_len } => run_loop(
+            ctx,
+            len,
+            chunk_start,
+            chunk_end,
+            FLUSH_AES,
+            |pw| verify::aes_check(salt, pv, pw, *key_len),
+            |pw| verify::full_verify(&ctx.info.zip_bytes, ctx.info.entry_idx, pw),
+        ),
+        Target::Pdf(t) => {
+            let flush = if t.revision <= 4 { FLUSH_PDF_FAST } else { FLUSH_AES };
+            run_loop(
+                ctx,
+                len,
+                chunk_start,
+                chunk_end,
+                flush,
+                |pw| verify::pdf_check(t, pw),
+                |_| true,
+            )
         }
     }
 }
 
 #[inline]
-fn run_loop<F: Fn(&[u8]) -> bool>(
+fn run_loop<F: Fn(&[u8]) -> bool, G: Fn(&[u8]) -> bool>(
     ctx: &WorkerCtx,
     len: usize,
     chunk_start: u64,
     chunk_end: u64,
     flush: u64,
     check: F,
+    confirm: G,
 ) {
     let mut pw = vec![0u8; len];
     let mut local: u64 = 0;
 
     for n in chunk_start..chunk_end {
         write_candidate(&mut pw, n, ctx.charset);
-        if check(&pw) && verify::full_verify(&ctx.info.zip_bytes, ctx.info.entry_idx, &pw) {
+        if check(&pw) && confirm(&pw) {
             let pw_str = String::from_utf8_lossy(&pw).into_owned();
             let _ = ctx.result.set(pw_str);
             ctx.found.store(true, Ordering::Relaxed);
