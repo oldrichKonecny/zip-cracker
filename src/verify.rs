@@ -336,7 +336,7 @@ use md5::Md5;
 use sha2::{Digest, Sha256, Sha384, Sha512};
 
 use aes::Aes128;
-use cipher::{BlockEncryptMut, KeyIvInit};
+use cipher::{BlockModeEncrypt, KeyIvInit};
 type Aes128CbcEnc = cbc::Encryptor<Aes128>;
 
 // Password padding string from Algorithm 2 (ISO 32000), used for R2-R4.
@@ -468,9 +468,10 @@ fn pdf_hash_2b(revision: u8, pw: &[u8], salt: &[u8]) -> Vec<u8> {
             k1.extend_from_slice(pw);
             k1.extend_from_slice(&k);
         }
-        let mut enc = Aes128CbcEnc::new(k[0..16].into(), k[16..32].into());
+        let mut enc = Aes128CbcEnc::new_from_slices(&k[0..16], &k[16..32]).unwrap();
         for block in k1.chunks_exact_mut(16) {
-            enc.encrypt_block_mut(block.into());
+            let block: &mut [u8; 16] = block.try_into().unwrap();
+            enc.encrypt_block(block.into());
         }
         let e = k1;
         k = match e[..16].iter().map(|v| *v as u32).sum::<u32>() % 3 {

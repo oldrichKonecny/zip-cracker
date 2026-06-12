@@ -1,11 +1,9 @@
 [build]
 # Build for the host CPU so the `aes` and `sha2` crates use the hardware
 # AES/SHA instructions (ARMv8 crypto extensions on Apple Silicon, AES-NI/SHA-NI
-# on x86). Without this, on aarch64 those crates fall back to slow software
-# implementations and the PDF R5/R6 (AES + SHA-2) hot loop runs ~10x slower.
+# on x86) via compile-time target features instead of runtime dispatch.
 #
-# The `aes_armv8` cfg flag is REQUIRED for the `aes` 0.8 crate to compile its
-# ARMv8 AES backend on aarch64 (without it there is only a software fallback,
-# regardless of target-cpu). `sha2` instead gates its aarch64 backend behind the
-# "asm" cargo feature (enabled in Cargo.toml). Both then runtime-detect the CPU.
-rustflags = ["-C", "target-cpu=native", "--cfg", "aes_armv8"]
+# Since `aes` 0.9 and `sha2` 0.11 the hardware backends are compiled in by
+# default with runtime CPU detection (no `aes_armv8` cfg or "asm" feature
+# needed); target-cpu=native just lets the compiler select them statically.
+rustflags = ["-C", "target-cpu=native"]

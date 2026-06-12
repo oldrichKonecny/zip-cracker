@@ -32,12 +32,13 @@ The binary is produced at `target/release/zip_pass_cracker`.
 
 > Always use the `--release` build. The debug build is dramatically slower.
 
-The repo ships a `.cargo/config.toml` that builds for the host CPU and enables
-the hardware AES/SHA backends of the `aes`/`sha2` crates (the `aes_armv8` cfg on
-ARM, runtime-detected AES-NI/SHA-NI on x86). This makes the AES-256 paths
-(ZIP-AES, PDF R5/R6) roughly **15× faster** on Apple Silicon — without it those
-crates fall back to software implementations. A normal `cargo build --release`
-picks this up automatically.
+The repo ships a `.cargo/config.toml` that builds for the host CPU
+(`target-cpu=native`), so the hardware AES/SHA backends of the `aes`/`sha2`
+crates (ARMv8 crypto extensions on Apple Silicon, AES-NI/SHA-NI on x86) are
+selected at compile time rather than via runtime dispatch. This keeps the
+AES-256 paths (ZIP-AES, PDF R5/R6) roughly **15× faster** on Apple Silicon than
+the software fallback. A normal `cargo build --release` picks this up
+automatically.
 
 ## Usage
 
